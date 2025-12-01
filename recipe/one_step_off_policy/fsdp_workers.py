@@ -47,6 +47,7 @@ from verl.workers.config import HFModelConfig, RolloutConfig
 from verl.workers.fsdp_workers import ActorRolloutRefWorker as ARRWorker
 from verl.workers.fsdp_workers import CriticWorker
 from verl.workers.rollout import get_rollout_class
+from recipe.one_step_off_policy.fault_manager import FaultMgr
 
 from .distributed_util import stateless_init_process_group
 
@@ -154,6 +155,10 @@ class ActorRolloutRefWorker(ARRWorker):
         self._weights_info = ret
         return ret
 
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def set_actor_weights_info(self, weights_info):
+        assert self._is_actor
+        self._weights_info = weights_info
 
 class RolloutWorker(ActorRolloutRefWorker):
     def __init__(self, config: DictConfig, role: str):
@@ -279,6 +284,7 @@ class RolloutWorker(ActorRolloutRefWorker):
         self.rollout = rollout
         self.rollout_sharding_manager = rollout_sharding_manager
 
+    @FaultMgr.timeout()
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="rollout"), blocking=False)
     def async_generate_sequences(self, prompts):
         # Support all hardwares
@@ -330,6 +336,25 @@ class RolloutWorker(ActorRolloutRefWorker):
         assert self._is_rollout
         self._weights_info = weights_info
 
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def get_actor_weights_info(self):
+        assert self._is_rollout
+        if hasattr(self, "_weights_info"):
+            return self._weights_info
+        if fsdp_version(self.actor_module_fsdp) == 1:
+            from torch.distributed.fsdp.api import ShardedStateDictConfig, StateDictType
+
+            FSDP.set_state_dict_type(
+                self.actor_module_fsdp,
+                state_dict_type=StateDictType.SHARDED_STATE_DICT,
+                state_dict_config=ShardedStateDictConfig(),
+            )
+        params = self._get_actor_params()
+        ret = []
+        for key, tensor in params.items():
+            ret.append((key, tensor.size(), tensor.dtype))
+        self._weights_info = ret
+        return ret
 
 class AsyncActorRolloutRefWorker(ActorRolloutRefWorker):
     def __init__(self, *args, **kwargs):

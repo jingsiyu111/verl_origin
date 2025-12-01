@@ -53,6 +53,7 @@ from verl.utils.metric import (
     reduce_metrics,
 )
 from verl.utils.tracking import ValidationGenerationsLogger
+from recipe.one_step_off_policy.fault_manager import FaultMgr
 
 
 class GenerationBatchFuture:
@@ -150,6 +151,8 @@ class OneStepOffRayTrainer(RayPPOTrainer):
         self.ray_worker_group_cls = ray_worker_group_cls
         self.device_name = device_name
         self.validation_generations_logger = ValidationGenerationsLogger()
+        self.gen_batch = None
+        self.non_tensor_batch = None
 
         # if ref_in_actor is True, the reference policy will be actor without lora applied
         self.ref_in_actor = config.actor_rollout_ref.model.get("lora_rank", 0) > 0
@@ -340,6 +343,8 @@ class OneStepOffRayTrainer(RayPPOTrainer):
             non_tensor_batch_keys=non_tensor_batch_keys_to_pop,
         )
         gen_batch = gen_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+        self.gen_batch = gen_batch
+        self.non_tensor_batch = batch.non_tensor_batch
 
         # sync weights from actor to rollout
         self.sync_rollout_weights()
@@ -468,6 +473,7 @@ class OneStepOffRayTrainer(RayPPOTrainer):
             with marked_timer("step", timing_raw):
                 # wait for the previous batch
                 with marked_timer("wait_prev_gen", timing_raw, color="red"):
+                    FaultMgr.catch_rollout_fault(batch_data_future)
                     epoch, batch, gen_batch_output, future_reward = batch_data_future.get()
                     timing_raw.update(gen_batch_output.meta_info["timing"])
                     gen_batch_output.meta_info.pop("timing", None)
@@ -498,20 +504,11 @@ class OneStepOffRayTrainer(RayPPOTrainer):
 
                 with marked_timer("reward", timing_raw, color="yellow"):
                     # compute reward model score
-                    if self.use_rm:
-                        reward_tensor = self.rm_wg.compute_rm_score(batch)
-                        batch = batch.union(reward_tensor)
-
-                    # Use the pre-launched future reward if available
-                    if self.config.reward_model.launch_reward_fn_async:
-                        # future_reward was already started in _async_gen_next_batch
-                        reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
-                    else:
-                        reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
+                    reward_tensor, reward_extra_infos_dict, batch = FaultMgr.catch_reward_fault(batch, future_reward)
 
                 # recompute old_log_probs
                 with marked_timer("old_log_prob", timing_raw, color="blue"):
-                    old_log_prob = self.actor_wg.compute_log_prob(batch)
+                    old_log_prob = FaultMgr.catch_actor_fault(batch)
                     entropys = old_log_prob.batch["entropys"]
                     response_masks = batch.batch["response_mask"]
                     actor_config = self.config.actor_rollout_ref.actor
@@ -619,6 +616,7 @@ class OneStepOffRayTrainer(RayPPOTrainer):
                     # update actor
                     with marked_timer("update_actor", timing_raw, color="red"):
                         batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
+                        FaultMgr.catch_rollout_fault(batch_data_future, wait_flag=True)
                         actor_output = self.actor_wg.update_actor(batch)
                     actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                     metrics.update(actor_output_metrics)

@@ -29,6 +29,7 @@ from verl.trainer.main_ppo import create_rl_dataset, create_rl_sampler
 from verl.trainer.ppo.reward import load_reward_manager
 from verl.trainer.ppo.utils import need_reference_policy
 from verl.utils.config import validate_config
+from recipe.one_step_off_policy.fault_manager import FaultMgr
 
 from .ray_trainer import OneStepOffRayTrainer
 
@@ -39,6 +40,7 @@ def main(config):
 
 
 # Define a function to run the PPO-like training process
+@FaultMgr.max_reschedule()
 def run_ppo(config) -> None:
     # Check if Ray is not initialized
     if not ray.is_initialized():
@@ -240,6 +242,7 @@ class TaskRunner:
             train_sampler=train_sampler,
             device_name=config.trainer.device,
         )
+        FaultMgr.bound(trainer)
         # Initialize the workers of the trainer.
         trainer.init_workers()
         # Start the training process.
