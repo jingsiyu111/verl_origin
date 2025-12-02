@@ -27,19 +27,42 @@ class FaultMgr:
         cls.trainer = trainer
 
     @classmethod
-    def update_retry_options(cls, ray_cls):
-        if cls.trainer.config:
-            enable_retry = cls.trainer.config.fault_manager.enable_retry
-            max_restarts = cls.trainer.config.fault_manager.max_restarts
-            max_task_retries = cls.trainer.config.fault_manager.max_task_retries
-            if enable_retry:
-                additional_resource = {
-                    "max_restarts": max_restarts,
-                    "max_task_retries": max_task_retries,
-                }
-                ray_cls.set_additional_resource(additional_resource)
-        else:
-            pass
+    def update_retry_options(selfcls,ray_cls):
+        old_init = ray_cls.__init__
+
+        @wraps(old_init)
+        def new_init(self, *args, **kwargs):
+            additional_resource = {}
+            old_init(self, *args, **kwargs)
+
+            if cls.trainer.config:
+                enable_retry = cls.trainer.config.fault_manager.enable_retry
+                max_restarts = cls.trainer.config.fault_manager.max_restarts
+                max_task_retries = cls.trainer.config.fault_manager.max_task_retries
+                if enable_retry:
+                    additional_resource = {
+                            "max_restarts": max_restarts,
+                            "max_task_retries": max_task_retries,
+                        }
+
+            self.update_options(additional_resource)
+
+        ray_cls.__init__ = new_init
+
+    @classmethod
+        def fault_execute_remote_single_worker(selfcls, ray_cls):
+            old_func = ray_cls._execute_remote_single_worker
+
+            @wraps(old_func)
+            def new_execute(self, worker, method_name, *args, **kwargs):
+                if self.fused_worker_used and method_name not in self.method_names:
+                    remote_call = getattr(worker, self.fused_worker_execute_fn_name)
+                    return remote_call.remote(f"{self.sub_cls_name}_fwmn_{method_name}", *args, **kwargs)
+                # fused worker not used
+                remote_call = getattr(worker, method_name)
+                return remote_call.options(retry_exceptions=True).remote(*args, **kwargs)
+
+            ray_cls._execute_remote_single_worker = new_execute
 
     @classmethod
     def rebuild_resourse_pool(cls, role):
@@ -401,19 +424,21 @@ class FaultMgr:
                             chip_find_cmd = f"npu-smi info | grep '{pid}'"
                             text = sys_command(chip_find_cmd)
                             match = re.search(r'\|\s*(\d+)\s+(\d+)\s*\|', text)
-                            device_id, chip_id = match.groups()
-                            aicore_cmd = f"npu-smi info -i {device_id} -c {chip_id} -t usages | grep 'Aicore'"
-                            res = sys_command(aicore_cmd).split(':')[1]
-                            usage = int(res.strip())
-
-                            if usage == 0:
-                                if not start_time:
-                                    start_time = time.time()
-                                elif time.time() - start_time > seconds:
-                                    ai_core_flag['flag'] = True
-                                    break
+                            if match:
+                                device_id, chip_id = match.groups()
+                                aicore_cmd = f"npu-smi info -i {device_id} -c {chip_id} -t usages | grep 'Aicore'"
+                                res = sys_command(aicore_cmd).split(':')[1]
+                                usage = int(res.strip())
+                                if usage == 0:
+                                    if not start_time:
+                                        start_time = time.time()
+                                    elif time.time() - start_time > seconds:
+                                        ai_core_flag['flag'] = True
+                                        break
+                                else:
+                                    start_time = None
                             else:
-                                start_time = None
+                                continue
                             time.sleep(1)
 
                     t = threading.Thread(target=monitor)
@@ -427,10 +452,8 @@ class FaultMgr:
                     finally:
                         stop_flag.set()
                         t.join()
-
                 else:
                     return func(self, *args, **kwargs)
-
             return wrapper
 
         return decorator

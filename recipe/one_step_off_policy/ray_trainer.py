@@ -180,6 +180,8 @@ class OneStepOffRayTrainer(RayPPOTrainer):
         self.resource_pool_manager.create_resource_pool()
 
         self.resource_pool_to_cls = {pool: {} for pool in self.resource_pool_manager.resource_pool_dict.values()}
+        FaultMgr.update_retry_options(RayClassWithInitArgs)
+        FaultMgr.fault_execute_remote_single_worker(RayWorkerGroup)
 
         # create actor and rollout
         for role, role_name in [(Role.Actor, "actor"), (Role.Rollout, "rollout")]:

@@ -27,7 +27,6 @@ from verl.protocol import DataProto, _padding_size_key
 from verl.single_controller.base import ClassWithInitArgs, ResourcePool, Worker, WorkerGroup
 from verl.single_controller.base.decorator import MAGIC_ATTR, Dispatch
 from verl.utils.py_functional import temp_env_var
-from verl.fault_manager.fault_manager import FaultMgr
 
 __all__ = ["Worker"]
 
@@ -360,7 +359,6 @@ class RayWorkerGroup(WorkerGroup):
         """
         super().__init__(resource_pool=resource_pool, **kwargs)
         self.ray_cls_with_init = ray_cls_with_init
-        FaultMgr.update_retry_options(ray_cls_with_init)
         self.name_prefix = get_random_string(length=6) if name_prefix is None else name_prefix
         self._ray_wait_register_center_timeout = ray_wait_register_center_timeout
         # Whether the WorkerGroup is a Colocate WorkerGroup created by FusedWorker.
@@ -684,7 +682,7 @@ class RayWorkerGroup(WorkerGroup):
             return remote_call.remote(f"{self.sub_cls_name}_fwmn_{method_name}", *args, **kwargs)
         # fused worker not used
         remote_call = getattr(worker, method_name)
-        return remote_call.options(retry_exceptions=True).remote(*args, **kwargs)
+        return remote_call.remote(*args, **kwargs)
 
     def execute_rank_zero_sync(self, method_name: str, *args, **kwargs):
         """Execute a method on rank zero worker synchronously.
