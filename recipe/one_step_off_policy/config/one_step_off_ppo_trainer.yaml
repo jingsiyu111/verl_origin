@@ -12,3 +12,17 @@ rollout:
   nnodes: 1
   # Number of GPUs per node
   n_gpus_per_node: 8
+
+# config for actor, rollout and reference model
+actor_rollout_ref:
+  fault_manager:
+    check_aicore: True
+
+
+fault_manager:
+  enable_retry: False
+  max_restarts: 4
+  max_task_retries: 4
+  actor_max_rebuild_times: 3
+  rollout_max_rebuild_times: 3
+  max_reschedule_times: 3

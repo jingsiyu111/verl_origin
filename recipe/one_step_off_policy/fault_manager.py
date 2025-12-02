@@ -27,8 +27,8 @@ class FaultMgr:
         cls.trainer = trainer
 
     @classmethod
-    def update_retry_options(selfcls,ray_cls):
-        old_init = ray_cls.__init__
+    def update_retry_options(cls, ray_cls_with_init_args):
+        old_init = ray_cls_with_init_args.__init__
 
         @wraps(old_init)
         def new_init(self, *args, **kwargs):
@@ -47,22 +47,22 @@ class FaultMgr:
 
             self.update_options(additional_resource)
 
-        ray_cls.__init__ = new_init
+        ray_cls_with_init_args.__init__ = new_init
 
     @classmethod
-        def fault_execute_remote_single_worker(selfcls, ray_cls):
-            old_func = ray_cls._execute_remote_single_worker
+    def fault_execute_remote_single_worker(selfcls, ray_cls):
+        old_func = ray_cls._execute_remote_single_worker
 
-            @wraps(old_func)
-            def new_execute(self, worker, method_name, *args, **kwargs):
-                if self.fused_worker_used and method_name not in self.method_names:
-                    remote_call = getattr(worker, self.fused_worker_execute_fn_name)
-                    return remote_call.remote(f"{self.sub_cls_name}_fwmn_{method_name}", *args, **kwargs)
-                # fused worker not used
-                remote_call = getattr(worker, method_name)
-                return remote_call.options(retry_exceptions=True).remote(*args, **kwargs)
+        @wraps(old_func)
+        def new_execute(self, worker, method_name, *args, **kwargs):
+            if self.fused_worker_used and method_name not in self.method_names:
+                remote_call = getattr(worker, self.fused_worker_execute_fn_name)
+                return remote_call.remote(f"{self.sub_cls_name}_fwmn_{method_name}", *args, **kwargs)
+            # fused worker not used
+            remote_call = getattr(worker, method_name)
+            return remote_call.options(retry_exceptions=True).remote(*args, **kwargs)
 
-            ray_cls._execute_remote_single_worker = new_execute
+        ray_cls._execute_remote_single_worker = new_execute
 
     @classmethod
     def rebuild_resourse_pool(cls, role):
@@ -412,7 +412,7 @@ class FaultMgr:
             @wraps(func)
             def wrapper(self, *args, **kwargs):
                 npu_flag = False
-                if hasattr(torch, "npu") and torch,npu.is_available():
+                if hasattr(torch, "npu") and torch.npu.is_available():
                     npu_flag = True
                 if self.config.fault_manager.check_aicore and npu_flag:
                     stop_flag = threading.Event()
